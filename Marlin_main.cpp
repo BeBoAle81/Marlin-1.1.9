@@ -210,6 +210,8 @@
  * M666 - Set/get endstop offsets for delta (Requires DELTA) or dual endstops (Requires [XYZ]_DUAL_ENDSTOPS).
  * M701 - Load filament (requires FILAMENT_LOAD_UNLOAD_GCODES)
  * M702 - Unload filament (requires FILAMENT_LOAD_UNLOAD_GCODES)
+ * M821 - Measure and Save Zmax position
+ * M822 - Stop printing and save remaining print job to SD
  * M851 - Set Z probe's Z offset in current units. (Negative = below the nozzle.)
  * M852 - Set skew factors: "M852 [I<xy>] [J<xz>] [K<yz>]". (Requires SKEW_CORRECTION_GCODE, and SKEW_CORRECTION_FOR_Z for IJ)
  * M860 - Report the position of position encoder modules.
@@ -369,6 +371,8 @@
 #endif
 
 bool Running = true;
+
+float zmax_pos_calc;
 
 uint8_t marlin_debug_flags = DEBUG_NONE;
 
@@ -659,6 +663,11 @@ float cartes[XYZ] = { 0 };
          filwidth_delay_index[2] = { 0, -1 };                   // Indexes into ring buffer
 #endif
 
+#if (HAS_Z_MAX && HAS_Z_MIN) //ENABLED(POWER_FAILURE_FEATURE)
+  static bool power_failure_switch = false;
+  void handle_power_failure();
+#endif
+
 #if ENABLED(ADVANCED_PAUSE_FEATURE)
   AdvancedPauseMenuResponse advanced_pause_menu_response;
   float filament_change_unload_length[EXTRUDERS],
@@ -899,6 +908,20 @@ void setup_killpin() {
     SET_INPUT_PULLUP(KILL_PIN);
   #endif
 }
+
+#if ENABLED(POWER_FAILURE_FEATURE)
+
+  void setup_powerfailurepin() {
+    #if ENABLED(ENDSTOPPULLUP_POWER_FAILURE)
+      SET_INPUT_PULLUP(POWER_FAILURE_PIN);
+    #else
+      SET_INPUT(POWER_FAILURE_PIN);
+    #endif
+    SET_OUTPUT(BATTERY_CONTROL_PIN);
+    WRITE(BATTERY_CONTROL_PIN, LOW);
+     
+  }
+#endif
 
 void setup_powerhold() {
   #if HAS_SUICIDE
@@ -3027,6 +3050,66 @@ static void do_homing_move(const AxisEnum axis, const float distance, const floa
  * Kinematic robots should wait till all axes are homed
  * before updating the current position.
  */
+ 
+ #if ((Z_HOME_DIR<0) && HAS_Z_MAX)
+  static void homezmax() {
+
+    const AxisEnum axis = Z_AXIS;
+    const int axis_home_dir = 1;
+  
+    // Fast move towards endstop until triggered
+    #if ENABLED(DEBUG_LEVELING_FEATURE)
+      if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("Home 1 Fast:");
+    #endif
+    do_homing_move(axis, 1.5 * zmax_pos_calc * axis_home_dir);
+
+    // When homing Z with probe respect probe clearance
+    const float bump = axis_home_dir * (
+      #if HOMING_Z_WITH_PROBE
+        (axis == Z_AXIS) ? max(Z_CLEARANCE_BETWEEN_PROBES, home_bump_mm(Z_AXIS)) :
+      #endif
+    home_bump_mm(axis)
+  );
+
+  // If a second homing move is configured...
+    if (bump) {
+      // Move away from the endstop by the axis HOME_BUMP_MM
+      #if ENABLED(DEBUG_LEVELING_FEATURE)
+        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("Move Away:");
+      #endif
+      do_homing_move(axis, -bump);
+
+      // Slow move towards endstop until triggered
+      #if ENABLED(DEBUG_LEVELING_FEATURE)
+        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("Home 2 Slow:");
+      #endif
+      do_homing_move(axis, 2 * bump, get_homing_bump_feedrate(axis));
+  }
+  
+      // For cartesian/core machines,
+      // set the axis to its home position
+      //set_axis_is_at_home(axis);
+      //axis_known_position[axis] = true;
+      SBI(axis_known_position, axis);
+      current_position[axis] = zmax_pos_calc;            //NATIVE_TO_LOGICAL(zmax_pos_calc, axis);
+      sync_plan_position();
+
+      destination[axis] = current_position[axis];
+
+      #if ENABLED(DEBUG_LEVELING_FEATURE)
+        if (DEBUGGING(LEVELING)) DEBUG_POS("> AFTER set_axis_is_at_home", current_position);
+      #endif
+    
+    #if ENABLED(DEBUG_LEVELING_FEATURE)
+      if (DEBUGGING(LEVELING)) {
+        SERIAL_ECHOPAIR("<<< homeaxis(", axis_codes[axis]);
+        SERIAL_CHAR(')');
+        SERIAL_EOL();
+      }
+    #endif  
+
+}
+#endif
 
 static void homeaxis(const AxisEnum axis) {
 
@@ -4057,6 +4140,7 @@ inline void gcode_G4() {
  *
  * Cartesian parameters
  *
+ *  W   Home to the Z Max endstop
  *  X   Home to the X endstop
  *  Y   Home to the Y endstop
  *  Z   Home to the Z endstop
@@ -4148,7 +4232,9 @@ inline void gcode_G28(const bool always_home_all) {
     const bool homeX = always_home_all || parser.seen('X'),
                homeY = always_home_all || parser.seen('Y'),
                homeZ = always_home_all || parser.seen('Z'),
-               home_all = (!homeX && !homeY && !homeZ) || (homeX && homeY && homeZ);
+//               home_all = (!homeX && !homeY && !homeZ) || (homeX && homeY && homeZ);
+               homeW = parser.seen('W'),
+               home_all = (!homeX && !homeY && !homeZ && !homeW) || (homeX && homeY && homeZ);
 
     set_destination_from_current();
 
@@ -4247,6 +4333,9 @@ inline void gcode_G28(const bool always_home_all) {
         #endif
 
       } // home_all || homeZ
+      #if (HAS_Z_MAX)
+        if (homeW) homezmax();
+      #endif
     #endif // Z_HOME_DIR < 0
 
     SYNC_PLAN_POSITION_KINEMATIC();
@@ -6585,6 +6674,72 @@ inline void gcode_G92() {
 #endif // SPINDLE_LASER_ENABLE
 
 /**
+ * M821 Measure and Save Zmax position
+ */
+#if (HAS_Z_MAX && HAS_Z_MIN)
+  inline void gcode_M821() {
+
+    home_all_axes();
+
+    #if HAS_SOFTWARE_ENDSTOPS
+      // Store the status of the soft endstops and disable if we're probing a non-printable location
+      static bool enable_soft_endstops = soft_endstops_enabled;
+      soft_endstops_enabled = false;
+    #endif     
+    
+    // Wait for planner moves to finish!
+    //stepper.synchronize();
+    planner.synchronize();
+    setup_for_endstop_or_probe_move();
+    endstops.enable(true);
+
+//    refresh_cmd_timeout();
+    
+  sync_plan_position();
+
+  do_blocking_move_to_z(zmax_pos_calc * 1.5, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+    endstops.hit_on_purpose();
+    set_current_from_steppers_for_axis(Z_AXIS);
+    SYNC_PLAN_POSITION_KINEMATIC();
+
+    do_blocking_move_to_z(current_position[Z_AXIS] - Z_CLEARANCE_BETWEEN_PROBES, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+
+    do_blocking_move_to_z(zmax_pos_calc * 1.5, MMM_TO_MMS(Z_PROBE_SPEED_SLOW));
+    endstops.hit_on_purpose();
+    set_current_from_steppers_for_axis(Z_AXIS);
+    SYNC_PLAN_POSITION_KINEMATIC();
+ 
+    settings.load;
+    zmax_pos_calc=current_position[Z_AXIS];
+    set_bed_leveling_enabled(true);
+    settings.save;
+    
+    #if HAS_SOFTWARE_ENDSTOPS
+      // Restore the soft endstop status
+      soft_endstops_enabled = enable_soft_endstops;
+    #endif
+    
+    endstops.not_homing();
+
+clean_up_after_endstop_or_probe_move();
+
+lcd_refresh();
+
+report_current_position();
+    
+  }
+#endif
+
+/**
+ * M822 Stop printing and save remaining print job to SD
+ */
+#if (HAS_Z_MAX && HAS_Z_MIN) //ENABLED(POWER_FAILURE_FEATURE)
+  inline void gcode_M822() {  
+  handle_power_failure();
+  }
+#endif
+
+/**
  * M17: Enable power on all stepper motors
  */
 inline void gcode_M17() {
@@ -7121,6 +7276,10 @@ inline void gcode_M17() {
    * M24: Start or Resume SD Print
    */
   inline void gcode_M24() {
+    #if ENABLED(POWER_FAILURE_FEATURE)
+      if (READ(POWER_FAILURE_PIN) == POWER_FAILURE_INVERTING)
+      {
+    #endif
     #if ENABLED(PARK_HEAD_ON_PAUSE)
       resume_print();
     #endif
@@ -7137,6 +7296,9 @@ inline void gcode_M17() {
       else
     #endif
         print_job_timer.start();
+    #if ENABLED(POWER_FAILURE_FEATURE)
+      }
+    #endif         
   }
 
   /**
@@ -12560,6 +12722,18 @@ void process_parsed_command() {
         case 540: gcode_M540(); break;                            // M540: Set Abort on Endstop Hit for SD Printing
       #endif
 
+      #if (HAS_Z_MIN && HAS_Z_MAX)
+        case 821: // M821: Measure and Save Zmax position
+          gcode_M821();
+          break;
+      #endif
+      
+      #if (HAS_Z_MAX && HAS_Z_MIN) //ENABLED(POWER_FAILURE_FEATURE)
+        case 822: // M822: Stop printing and save remaining print job to SD
+          gcode_M822();
+          break;
+      #endif
+
       #if ENABLED(ADVANCED_PAUSE_FEATURE)
         case 600: gcode_M600(); break;                            // M600: Pause for Filament Change
         case 603: gcode_M603(); break;                            // M603: Configure Filament Change
@@ -14046,6 +14220,127 @@ void prepare_move_to_destination() {
 
 #endif
 
+#if (HAS_Z_MAX && HAS_Z_MIN) //ENABLED(POWER_FAILURE_FEATURE)
+
+
+  void handle_power_failure() {
+
+   if (!power_failure_switch)
+     {
+      power_failure_switch=true;
+      const float old_feedrate_mm_s = feedrate_mm_s;
+      static float failure_position[XYZE];
+
+
+      COPY(failure_position, current_position);
+//      set_current_from_steppers_for_axis(ALL_AXES);  
+//      SYNC_PLAN_POSITION_KINEMATIC(); 
+      
+      const int32_t n_pf = card.getIndex();
+      String failure_commands="";
+     
+      failure_commands+="M190 S"+String(thermalManager.degTargetBed())+"\r\n";
+
+      HOTEND_LOOP(){failure_commands+="T"+String(e)+"\r\nM109 S"+String(thermalManager.degTargetHotend(e))+"\r\n";}
+      
+      failure_commands+="G28 W\r\nG28 X Y\r\nM420 S1\r\nM106 S"+String(fanSpeeds[0])+"\r\n";
+
+      thermalManager.disable_all_heaters();        
+     // stepper.synchronize();      
+      planner.synchronize();
+                   
+      failure_commands+="G1 Z"+String(failure_position[Z_AXIS]+5)+" F300\r\n"+"G92 E0\r\n";
+      
+      failure_commands+="G1 X"+String(failure_position[X_AXIS])+" Y"+String(failure_position[Y_AXIS])+" F3600\r\n"; 
+
+      failure_commands+="G1 Z"+String(failure_position[Z_AXIS])+" F300\r\n"+"G1 E5 F2400\r\nG92 E"+String(failure_position[E_AXIS])+"\r\nG1 F1800";
+
+//      #if IS_SCARA
+//        fast_move ? prepare_uninterpolated_move_to_destination() : prepare_move_to_destination();
+//      #else
+//        prepare_move_to_destination();
+//      #endif      
+
+//      stepper.finish_and_disable();
+      
+      card.openFile_PF();   
+
+      char f_commands[failure_commands.length()+1];
+      failure_commands.toCharArray(f_commands, failure_commands.length()+1);
+      card.write_command_PF(f_commands);
+      
+      cmd_queue_index_w=cmd_queue_index_r;
+      
+      while (commands_in_queue) {
+         if ((command_queue[cmd_queue_index_r][0]!='M') || (command_queue[cmd_queue_index_r][1]!='8') || (command_queue[cmd_queue_index_r][2]!='2') || (command_queue[cmd_queue_index_r][3]!='2'))
+                                         card.write_command_PF(command_queue[cmd_queue_index_r]);
+         command_queue[cmd_queue_index_r][0]='\0';
+         if (commands_in_queue) {
+            --commands_in_queue;
+            if (++cmd_queue_index_r >= BUFSIZE) cmd_queue_index_r = 0;
+            cmd_queue_index_w=cmd_queue_index_r;
+            }
+         }
+ 
+      failure_commands="M32 S"+String(n_pf)+" !/";
+      failure_commands.toCharArray(f_commands, failure_commands.length()+1);
+      strcat(f_commands, card.getfilenamepf());
+      strcat(f_commands, "#");
+      card.write_command_PF(f_commands);
+      
+      card.closefile_PF();
+      
+      card.stopSDPrint();
+      clear_command_queue();
+      
+
+      print_job_timer.stop();
+      #if FAN_COUNT > 0
+        for (uint8_t i = 0; i < FAN_COUNT; i++) fanSpeeds[i] = 0;
+      #endif
+      wait_for_heatup = false;
+      lcd_setstatusPGM(PSTR(MSG_POWER_FAILURE), -1); 
+      lcd_return_to_status();
+
+      safe_delay(500);
+      
+      feedrate_mm_s=40;
+      destination[E_AXIS]=current_position[E_AXIS]-3;
+      prepare_move_to_destination();
+//      stepper.synchronize();
+      planner.synchronize();
+      
+//      thermalManager.disable_all_heaters();      
+      
+//      do_pause_e_move(-3, PAUSE_PARK_RETRACT_FEEDRATE);
+//      stepper.synchronize();
+      
+//      do_blocking_move_to_z(failure_position[Z_AXIS]+3, NOZZLE_PARK_Z_FEEDRATE);
+//      do_blocking_move_to_xy(190, 190, NOZZLE_PARK_XY_FEEDRATE);
+//      stepper.synchronize();
+      
+      destination[X_AXIS]=195;
+      destination[Y_AXIS]=195;
+      destination[Z_AXIS]=current_position[Z_AXIS]+3;
+      prepare_move_to_destination();
+//      stepper.synchronize();       
+      planner.synchronize();
+
+      quickstop_stepper();
+     
+//      stepper.finish_and_disable();
+      planner.finish_and_disable();
+
+      disable_all_steppers();    
+      
+      feedrate_mm_s = old_feedrate_mm_s;
+         
+      power_failure_switch=false;      
+   }     
+  }
+  
+#endif // POWER_FAILURE_FEATURE
+
 void enable_all_steppers() {
   #if ENABLED(AUTO_POWER_CONTROL)
     powerManager.power_on();
@@ -14101,6 +14396,29 @@ void manage_inactivity(const bool ignore_stepper_queue/*=false*/) {
 
   #if ENABLED(FILAMENT_RUNOUT_SENSOR)
     runout.run();
+  #endif
+
+  #if ENABLED(POWER_FAILURE_FEATURE)
+    if (((READ(POWER_FAILURE_PIN) != POWER_FAILURE_INVERTING)) && (!power_failure_switch))
+      {
+       if (IS_SD_PRINTING) 
+          {
+           //handle_power_failure();
+           enqueue_and_echo_commands_P(PSTR("M822"));
+           } else {   HOTEND_LOOP() if (thermalManager.target_temperature[HOTEND_INDEX]) 
+                                          { 
+                                            thermalManager.disable_all_heaters();
+                                            }
+                      #if HAS_TEMP_BED
+                               if (thermalManager.target_temperature_bed) 
+                                  {
+                                   thermalManager.disable_all_heaters();
+                                   }
+                      #endif
+                      if ((fanSpeeds[0]!=255) && (thermalManager.degHotend(0)>=50)) fanSpeeds[0]=255;
+                      if (thermalManager.degHotend(0)<50) WRITE(BATTERY_CONTROL_PIN, HIGH);
+                 }
+      }             
   #endif
 
   if (commands_in_queue < BUFSIZE) get_available_commands();
@@ -14436,6 +14754,10 @@ void setup() {
   #if ENABLED(FILAMENT_RUNOUT_SENSOR)
     runout.setup();
   #endif
+
+  #if ENABLED(POWER_FAILURE_FEATURE)
+    setup_powerfailurepin();
+  #endif 
 
   setup_killpin();
 

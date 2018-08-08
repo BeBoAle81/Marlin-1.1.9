@@ -195,6 +195,7 @@ uint16_t max_display_update_time = 0;
     void lcd_info_thermistors_menu();
     void lcd_info_board_menu();
     void lcd_info_menu();
+    void lcd_info_printer_menu();
   #endif // LCD_INFO_MENU
 
   #if ENABLED(LED_CONTROL_MENU)
@@ -1124,6 +1125,9 @@ void lcd_quick_feedback(const bool clear_buttons) {
           else
             MENU_ITEM(function, MSG_RESUME_PRINT, lcd_sdcard_resume);
           MENU_ITEM(function, MSG_STOP_PRINT, lcd_sdcard_stop);
+          #if (HAS_Z_MAX && HAS_Z_MIN) //ENABLED(POWER_FAILURE_FEATURE)
+             MENU_ITEM(gcode, MSG_STOP_RECORD_PRINT, PSTR("M822"));
+          #endif
         }
         else {
           MENU_ITEM(submenu, MSG_CARD_MENU, lcd_sdcard_menu);
@@ -1141,7 +1145,8 @@ void lcd_quick_feedback(const bool clear_buttons) {
     #endif // SDSUPPORT
 
     #if ENABLED(LCD_INFO_MENU)
-      MENU_ITEM(submenu, MSG_INFO_MENU, lcd_info_menu);
+//      MENU_ITEM(submenu, MSG_INFO_MENU, lcd_info_menu);
+      MENU_ITEM(submenu, MSG_INFO_PRINTER_MENU, lcd_info_printer_menu);        // Printer Info >
     #endif
 
     #if ENABLED(LED_CONTROL_MENU)
@@ -1834,17 +1839,22 @@ void lcd_quick_feedback(const bool clear_buttons) {
       line_to_z(4.0);
       switch (bed_corner) {
         case 0:
-          current_position[X_AXIS] = X_MIN_BED + LEVEL_CORNERS_INSET;
-          current_position[Y_AXIS] = Y_MIN_BED + LEVEL_CORNERS_INSET;
+//          current_position[X_AXIS] = X_MIN_BED + LEVEL_CORNERS_INSET;
+//          current_position[Y_AXIS] = Y_MIN_BED + LEVEL_CORNERS_INSET;
+          current_position[X_AXIS] = LEFT_CORNER_SAFE_BED_POSITION;
+          current_position[Y_AXIS] = FRONT_CORNER_SAFE_BED_POSITION;
           break;
         case 1:
-          current_position[X_AXIS] = X_MAX_BED - LEVEL_CORNERS_INSET;
+//          current_position[X_AXIS] = X_MAX_BED - LEVEL_CORNERS_INSET;
+          current_position[X_AXIS] = RIGHT_CORNER_SAFE_BED_POSITION;
           break;
         case 2:
-          current_position[Y_AXIS] = Y_MAX_BED - LEVEL_CORNERS_INSET;
+//          current_position[Y_AXIS] = Y_MAX_BED - LEVEL_CORNERS_INSET;
+          current_position[Y_AXIS] = BACK_CORNER_SAFE_BED_POSITION;
           break;
         case 3:
-          current_position[X_AXIS] = X_MIN_BED + LEVEL_CORNERS_INSET;
+//          current_position[X_AXIS] = X_MIN_BED + LEVEL_CORNERS_INSET;
+          current_position[X_AXIS] = LEFT_CORNER_SAFE_BED_POSITION;
           break;
         #if ENABLED(LEVEL_CENTER_TOO)
           case 4:
@@ -2622,6 +2632,10 @@ void lcd_quick_feedback(const bool clear_buttons) {
       #if ENABLED(MESH_BED_LEVELING)
         MENU_ITEM_EDIT(float43, MSG_BED_Z, &mbl.z_offset, -1, 1);
       #endif
+      
+      #if ENABLED(POWER_FAILURE_FEATURE)
+        MENU_ITEM(gcode, MSG_MEASURE_ZMAX, PSTR("M821"));
+      #endif  
 
       #if ENABLED(BABYSTEP_ZPROBE_OFFSET)
         MENU_ITEM(submenu, MSG_ZPROBE_ZOFFSET, lcd_babystep_zoffset);
@@ -2635,7 +2649,7 @@ void lcd_quick_feedback(const bool clear_buttons) {
       #endif
 
       #if ENABLED(EEPROM_SETTINGS)
-        MENU_ITEM(function, MSG_LOAD_EEPROM, lcd_load_settings);
+//        MENU_ITEM(function, MSG_LOAD_EEPROM, lcd_load_settings);
         MENU_ITEM(function, MSG_STORE_EEPROM, lcd_store_settings);
       #endif
       END_MENU();
@@ -4207,11 +4221,11 @@ void lcd_quick_feedback(const bool clear_buttons) {
       START_MENU();
       MENU_BACK(MSG_MAIN);
       MENU_ITEM(submenu, MSG_INFO_PRINTER_MENU, lcd_info_printer_menu);        // Printer Info >
-      MENU_ITEM(submenu, MSG_INFO_BOARD_MENU, lcd_info_board_menu);            // Board Info >
-      MENU_ITEM(submenu, MSG_INFO_THERMISTOR_MENU, lcd_info_thermistors_menu); // Thermistors >
-      #if ENABLED(PRINTCOUNTER)
-        MENU_ITEM(submenu, MSG_INFO_STATS_MENU, lcd_info_stats_menu);          // Printer Statistics >
-      #endif
+//      MENU_ITEM(submenu, MSG_INFO_BOARD_MENU, lcd_info_board_menu);            // Board Info >
+//      MENU_ITEM(submenu, MSG_INFO_THERMISTOR_MENU, lcd_info_thermistors_menu); // Thermistors >
+//      #if ENABLED(PRINTCOUNTER)
+//        MENU_ITEM(submenu, MSG_INFO_STATS_MENU, lcd_info_stats_menu);          // Printer Statistics >
+//      #endif
       END_MENU();
     }
   #endif // LCD_INFO_MENU

@@ -46,6 +46,7 @@
   bool lcd_hasstatus();
   void lcd_setstatus(const char* message, const bool persist=false);
   void lcd_setstatusPGM(const char* message, const int8_t level=0);
+  void lcd_return_to_status();
   void lcd_setalertstatusPGM(const char* message);
   void lcd_reset_alert_level();
   void lcd_reset_status();

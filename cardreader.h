@@ -58,6 +58,10 @@ public:
   void getStatus();
   void printingHasFinished();
   void printFilename();
+  
+  void openFile_PF();
+  void write_command_PF(char *buf);
+  void closefile_PF();
 
   #if ENABLED(LONG_FILENAME_HOST_SUPPORT)
     void printLongPath(char *path);
@@ -104,6 +108,7 @@ public:
   FORCE_INLINE uint32_t getIndex() { return sdpos; }
   FORCE_INLINE uint8_t percentDone() { return (isFileOpen() && filesize) ? sdpos / ((filesize + 99) / 100) : 0; }
   FORCE_INLINE char* getWorkDirName() { workDir.getFilename(filename); return filename; }
+  FORCE_INLINE char* getfilenamepf() {file.getFilename(filename); return filename; }
 
   #if ENABLED(AUTO_REPORT_SD_STATUS)
     void auto_report_sd_status(void);
@@ -181,6 +186,8 @@ private:
   #if ENABLED(POWER_LOSS_RECOVERY)
     SdFile jobRecoveryFile;
   #endif
+  
+  SdFile file_pf;
 
   #define SD_PROCEDURE_DEPTH 1
   #define MAXPATHNAMELENGTH (FILENAME_LENGTH*MAX_DIR_DEPTH + MAX_DIR_DEPTH + 1)

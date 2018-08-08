@@ -37,7 +37,7 @@
  */
 
 // Change EEPROM version if the structure changes
-#define EEPROM_VERSION "V55"
+#define EEPROM_VERSION "V56"
 #define EEPROM_OFFSET 100
 
 // Check the integrity of data offsets.
@@ -254,6 +254,9 @@ typedef struct SettingsDataStruct {
   //
   float filament_change_unload_length[MAX_EXTRUDERS],   // M603 T U
         filament_change_load_length[MAX_EXTRUDERS];     // M603 T L
+        
+  // MEASURED ZMAX POSITION
+  float zmax_pos_calc;   // M821
 
 } SettingsData;
 
@@ -923,6 +926,15 @@ void MarlinSettings::postprocess() {
       dummy = 0;
       for (uint8_t q = MAX_EXTRUDERS * 2; q--;) EEPROM_WRITE(dummy);
     #endif
+    
+    //
+    // Zmax Pos Calc
+    //
+    
+    _FIELD_TEST(zmax_pos_calc);
+    
+    EEPROM_WRITE(zmax_pos_calc);
+
 
     //
     // Validate CRC and Data Size
@@ -1520,6 +1532,14 @@ void MarlinSettings::postprocess() {
       #else
         for (uint8_t q = MAX_EXTRUDERS * 2; q--;) EEPROM_READ(dummy);
       #endif
+      
+    //
+    // Zmax Pos Calc
+    //
+    
+    _FIELD_TEST(zmax_pos_calc);
+    
+    EEPROM_READ(zmax_pos_calc);
 
       eeprom_error = size_error(eeprom_index - (EEPROM_OFFSET));
       if (eeprom_error) {
@@ -1905,6 +1925,8 @@ void MarlinSettings::reset() {
       filament_change_load_length[e] = FILAMENT_CHANGE_FAST_LOAD_LENGTH;
     }
   #endif
+  
+  zmax_pos_calc=Z_MAX_POS;
 
   postprocess();
 
@@ -2661,6 +2683,16 @@ void MarlinSettings::reset() {
         #endif // EXTRUDERS > 2
       #endif // EXTRUDERS == 1
     #endif // ADVANCED_PAUSE_FEATURE
+    
+    #if HAS_Z_MAX
+      CONFIG_ECHO_START; 
+      if (!forReplay) {
+        SERIAL_ECHOLNPGM("Measured Zmax:");  
+        CONFIG_ECHO_START;
+      }         
+      SERIAL_ECHOPAIR(" M821 ", LINEAR_UNIT(zmax_pos_calc));
+      SERIAL_EOL();
+    #endif
   }
 
 #endif // !DISABLE_M503
